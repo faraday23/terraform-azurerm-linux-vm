@@ -1,3 +1,8 @@
+locals {
+  admin_password = var.virtual_machine_settings.disable_password_authentication != true && var.virtual_machine_settings.admin_password == null ? element(concat(random_password.admin.*.result, [""]), 0) : var.virtual_machine_settings.admin_password
+}
+
+
 resource "tls_private_key" "ssh_keys" {
   algorithm = "RSA"
   rsa_bits  = "2048"
@@ -9,36 +14,36 @@ resource "local_file" "pem_files" {
   file_permission = "0600"
 }
 
-# creates random password for admin account
+# creates random password for admin account if not specified
 resource "random_password" "admin" {
-  length  = 24
-  special = true
+  count            = var.virtual_machine_settings.disable_password_authentication != true ? 1 : 0
+  length           = 24
+  special          = true
+  override_special = "!@#$%^&*"
 }
 
 resource "azurerm_public_ip" "public_ip" {
+  count               = var.public_ip_settings != null ? 1 : 0
   name                = "${var.names.product_name}-pubip"
   location            = var.location
   resource_group_name = var.resource_group_name
   tags                = var.tags
 
-  allocation_method = try(var.allocation_method, null)
-  sku               = try(var.sku, null)
-  zones             = [var.availability_zone]
+  allocation_method = try(var.public_ip_settings.allocation_method, null)
+  sku               = try(var.public_ip_settings.sku, null)
+  zones             = try([var.availability_zone], null)
 }
 
-
 resource "azurerm_network_interface" "nic" {
-  for_each = var.network_interface_settings
-
   name                = "${var.names.product_name}-nic"
   location            = var.location
   resource_group_name = var.resource_group_name
   tags                = var.tags
 
   ip_configuration {
-    name                          = "${var.names.product_name}-ip-config"
-    subnet_id                     = lookup(each.value, "subnet_id", null)
-    private_ip_address_allocation = lookup(each.value, "private_ip_address_allocation", null)
+    name                          = format("%s-%s", var.names.product_name, var.names.environment)
+    subnet_id                     = try(var.network_interface_settings.subnet_id, null)
+    private_ip_address_allocation = try(var.network_interface_settings.private_ip_address_allocation, null)
   }
 }
 
@@ -47,9 +52,9 @@ resource "azurerm_linux_virtual_machine" "oracle_db" {
   resource_group_name             = var.resource_group_name
   location                        = var.location
   size                            = try(var.virtual_machine_settings.size, "")
-  admin_username                  = try(var.virtual_machine_settings.admin_username, "")
-  admin_password                  = random_password.admin.result
-  disable_password_authentication = try(var.virtual_machine_settings.disable_password_authentication, null)
+  admin_username                  = try(var.virtual_machine_settings.admin_username)
+  admin_password                  = local.admin_password
+  disable_password_authentication = try(var.virtual_machine_settings.disable_password_authentication)
   priority                        = try(var.virtual_machine_settings.priority, null)
   eviction_policy                 = try(var.virtual_machine_settings.eviction_policy, null)
   zone                            = try(var.availability_zone, null)
