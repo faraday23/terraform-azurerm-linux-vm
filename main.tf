@@ -1,22 +1,28 @@
 locals {
-  admin_password = var.virtual_machine_settings.disable_password_authentication != true && var.virtual_machine_settings.admin_password == null ? element(concat(random_password.admin.*.result, [""]), 0) : var.virtual_machine_settings.admin_password
+  vm_settings = zipmap(keys(var.vm_settings), [for vm_setting in values(var.vm_settings) : merge(var.vm_defaults, vm_setting)])
 }
-
 
 resource "tls_private_key" "ssh_keys" {
   algorithm = "RSA"
   rsa_bits  = "2048"
 }
 
+resource "random_string" "public_key" {
+  length  = 4
+  special = false
+  upper   = false
+  number  = false
+}
+
 resource "local_file" "pem_files" {
   content         = tls_private_key.ssh_keys.private_key_pem
-  filename        = "${path.module}/${"jumpbox"}.pem"
+  filename        = "${path.module}/oracle_public_key-${random_string.public_key.result}.pem"
   file_permission = "0600"
 }
 
 # creates random password for admin account if not specified
 resource "random_password" "admin" {
-  count            = var.virtual_machine_settings.disable_password_authentication != true ? 1 : 0
+  for_each         = var.vm_settings
   length           = 24
   special          = true
   override_special = "!@#$%^&*"
@@ -47,66 +53,44 @@ resource "azurerm_network_interface" "nic" {
   }
 }
 
-resource "azurerm_linux_virtual_machine" "oracle_db" {
-  name                            = "${var.names.product_name}-db"
+resource "azurerm_linux_virtual_machine" "oracle_vm" {
+  for_each = local.vm_settings
+
+  name                            = each.key
   resource_group_name             = var.resource_group_name
   location                        = var.location
-  size                            = try(var.virtual_machine_settings.size, "")
-  admin_username                  = try(var.virtual_machine_settings.admin_username)
-  admin_password                  = local.admin_password
-  disable_password_authentication = try(var.virtual_machine_settings.disable_password_authentication)
-  priority                        = try(var.virtual_machine_settings.priority, null)
-  eviction_policy                 = try(var.virtual_machine_settings.eviction_policy, null)
-  zone                            = try(var.availability_zone, null)
+  computer_name                   = "${var.names.product_name}-${var.names.environment}-${each.value.computer_name}"
+  size                            = each.value.size
+  admin_username                  = each.value.admin_username
+  admin_password                  = each.value.disable_password_authentication != true && each.value.admin_password == "" ? random_password.admin[each.key].result : each.value.admin_password
+  disable_password_authentication = each.value.disable_password_authentication
+  priority                        = each.value.priority
+  eviction_policy                 = each.value.eviction_policy
+  zone                            = var.availability_zone
   network_interface_ids           = [azurerm_network_interface.nic.id, ]
 
   admin_ssh_key {
-    username   = try(var.virtual_machine_settings.admin_ssh_key.username, null)
-    public_key = try(tls_private_key.ssh_keys.public_key_openssh, var.virtual_machine_settings.admin_ssh_key.public_key)
+    username   = each.value.username
+    public_key = file("~/home/${each.value.username}/.ssh/authorized_keys")
   }
 
   identity {
-    type = try(var.virtual_machine_settings.identity.type, null)
+    type = each.value.type
   }
 
   os_disk {
-    caching              = try(var.virtual_machine_settings.os_disk.caching, null)
-    storage_account_type = try(var.virtual_machine_settings.os_disk.storage_account_type, null)
+    caching              = each.value.caching
+    storage_account_type = each.value.storage_account_type
   }
 
   source_image_reference {
-    publisher = try(var.virtual_machine_settings.source_image_reference.publisher, null)
-    offer     = try(var.virtual_machine_settings.source_image_reference.offer, null)
-    sku       = try(var.virtual_machine_settings.source_image_reference.sku, null)
-    version   = try(var.virtual_machine_settings.source_image_reference.version, null)
+    publisher = each.value.publisher
+    offer     = each.value.offer
+    sku       = each.value.sku
+    version   = each.value.version
   }
 
   boot_diagnostics {
-    storage_account_uri = try(var.virtual_machine_settings.boot_diagnostics.storage_account_uri, null)
+    storage_account_uri = each.value.storage_account_uri
   }
-}
-
-resource "azurerm_managed_disk" "disk" {
-  for_each = var.storage_data_disk_config
-
-  name                = lookup(each.value, "name", "${var.names.product_name}-${each.key}")
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  tags                = var.tags
-
-  zones                = [var.availability_zone]
-  storage_account_type = lookup(each.value, "storage_account_type", "Standard_LRS")
-
-  create_option = lookup(each.value, "create_option", "Empty")
-  disk_size_gb  = lookup(each.value, "disk_size_gb", null)
-}
-
-resource "azurerm_virtual_machine_data_disk_attachment" "disk_attach" {
-  for_each = var.storage_data_disk_config
-
-  managed_disk_id    = azurerm_managed_disk.disk[each.key].id
-  virtual_machine_id = azurerm_linux_virtual_machine.oracle_db.id
-
-  lun     = lookup(each.value, "lun", each.key)
-  caching = lookup(each.value, "caching", "ReadWrite")
 }
