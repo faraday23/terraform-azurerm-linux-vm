@@ -71,7 +71,7 @@ resource "azurerm_linux_virtual_machine" "oracle_vm" {
 
   admin_ssh_key {
     username   = each.value.username
-    public_key = file("~/home/${each.value.username}/.ssh/authorized_keys")
+    public_key = ${"~/home/${each.value.username}/.ssh/authorized_keys")}
   }
 
   identity {
